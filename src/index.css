@@ -1,0 +1,37 @@
+@import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;700&family=JetBrains+Mono:wght@400;700&display=swap');
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+:root {
+  color-scheme: light;
+}
+
+body {
+  @apply bg-[#F8F9FA] text-[#1A1A1B] overflow-x-hidden;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Custom slider thumb matching clean minimalism */
+input[type="range"]::-webkit-slider-thumb {
+  @apply w-5 h-5 bg-black rounded-full shadow-md border-0 ring-4 ring-white;
+  -webkit-appearance: none;
+}
+
+input[type="range"]::-moz-range-thumb {
+  @apply w-5 h-5 bg-black rounded-full shadow-md border-0 ring-4 ring-white;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  @apply w-1;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-gray-300 rounded-full;
+}
