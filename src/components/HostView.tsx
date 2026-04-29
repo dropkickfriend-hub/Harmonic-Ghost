@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Activity } from 'lucide-react';
+import { Activity, Upload, Check } from 'lucide-react';
 import type { GhostSocket } from '../socket/useSocket';
 import { startPitchDetector, type PitchDetectorHandle } from '../audio/PitchDetector';
 
@@ -16,7 +16,10 @@ interface Props {
 export function HostView({ socket, roomId, baseFreq, totalNodes, isPlaying, setBaseFreq }: Props) {
   const [isLive, setIsLive] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [trackName, setTrackName] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
   const pitch = useRef<PitchDetectorHandle | null>(null);
+  const fileInput = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => () => pitch.current?.stop(), []);
 
@@ -48,6 +51,28 @@ export function HostView({ socket, roomId, baseFreq, totalNodes, isPlaying, setB
     }
   };
 
+  const onPickFile = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/track/${roomId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': file.type || 'audio/mpeg' },
+        body: await file.arrayBuffer(),
+      });
+      if (!res.ok) throw new Error(`upload failed: ${res.status}`);
+      setTrackName(file.name);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const canBroadcast = totalNodes > 0;
+
   return (
     <motion.div
       key="host"
@@ -57,51 +82,84 @@ export function HostView({ socket, roomId, baseFreq, totalNodes, isPlaying, setB
     >
       <div className="space-y-12">
         <div className="space-y-4">
-          <span className="text-[11px] font-bold uppercase tracking-widest text-gray-400">Target Frequency</span>
+          <span className="text-[11px] font-bold uppercase tracking-widest text-gray-400">Source Audio</span>
+          <input
+            ref={fileInput}
+            type="file"
+            accept="audio/*"
+            onChange={onPickFile}
+            className="hidden"
+          />
+          <button
+            onClick={() => fileInput.current?.click()}
+            disabled={uploading}
+            className="w-full h-16 bg-white border border-gray-200 rounded-xl flex items-center gap-4 px-5 hover:border-black transition-all disabled:opacity-50"
+          >
+            <div className="w-10 h-10 rounded-lg bg-gray-50 flex items-center justify-center">
+              {trackName ? <Check className="w-5 h-5 text-emerald-500" /> : <Upload className="w-5 h-5" />}
+            </div>
+            <div className="text-left flex-1 min-w-0">
+              <div className="font-semibold text-sm truncate">
+                {uploading ? 'Uploading…' : trackName || 'Load track (mp3, wav, ogg)'}
+              </div>
+              <div className="text-[10px] text-gray-400 uppercase tracking-wider">
+                {trackName ? 'Ready · band-split across nodes' : 'No track loaded · harmonic-stack mode'}
+              </div>
+            </div>
+          </button>
+        </div>
+
+        <div className="space-y-4">
+          <span className="text-[11px] font-bold uppercase tracking-widest text-gray-400">
+            {trackName ? 'Phantom Fundamental' : 'Target Frequency'}
+          </span>
           <div className="flex items-baseline gap-4">
-            <h2 className="text-8xl font-light tracking-tighter text-black">{baseFreq}</h2>
+            <h2 className="text-7xl font-light tracking-tighter text-black">{baseFreq}</h2>
             <span className="text-2xl text-gray-300 font-light">Hz</span>
           </div>
           <p className="text-gray-400 text-xs leading-relaxed max-w-xs">
-            Synchronized fundamental frequency distributed across the phantom mesh network.
+            {trackName
+              ? `Track split into ${Math.max(totalNodes, 1)} log bands across connected nodes. Sub-${80}Hz dropped — your ear fills it in.`
+              : 'Synchronized fundamental distributed across the phantom mesh.'}
           </p>
         </div>
 
-        <div className="space-y-6">
-          <div className="flex items-center justify-between">
-            <button
-              onClick={toggleLive}
-              className={`px-4 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${
-                isLive ? 'bg-orange-500 text-white animate-pulse' : 'bg-gray-100 text-gray-400 hover:text-black'
+        {!trackName && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <button
+                onClick={toggleLive}
+                className={`px-4 py-2 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all ${
+                  isLive ? 'bg-orange-500 text-white animate-pulse' : 'bg-gray-100 text-gray-400 hover:text-black'
+                }`}
+              >
+                {isLive ? 'Live Sync Active' : 'Enable Live Capture'}
+              </button>
+              <span className="text-[10px] font-mono text-gray-400">{isLive ? 'Detecting...' : 'Manual'}</span>
+            </div>
+            <input
+              type="range"
+              min={40}
+              max={400}
+              step={1}
+              value={baseFreq}
+              onChange={(e) => updateFreq(Number(e.target.value))}
+              disabled={isLive}
+              className={`w-full h-1 rounded-full appearance-none cursor-pointer transition-opacity ${
+                isLive ? 'opacity-30' : 'opacity-100'
               }`}
-            >
-              {isLive ? 'Live Sync Active' : 'Enable Live Capture'}
-            </button>
-            <span className="text-[10px] font-mono text-gray-400">{isLive ? 'Detecting...' : 'Manual Mode'}</span>
+            />
           </div>
+        )}
 
-          <input
-            type="range"
-            min={40}
-            max={400}
-            step={1}
-            value={baseFreq}
-            onChange={(e) => updateFreq(Number(e.target.value))}
-            disabled={isLive}
-            className={`w-full h-1 rounded-full appearance-none cursor-pointer transition-opacity ${
-              isLive ? 'opacity-30' : 'opacity-100'
-            }`}
-          />
-
-          <div className="grid grid-cols-2 gap-4">
-            <div className="bg-white border border-gray-200 p-6 rounded-2xl flex flex-col gap-1">
-              <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Network Nodes</span>
-              <span className="text-3xl font-light text-black">{String(totalNodes).padStart(2, '0')}</span>
-            </div>
-            <div className="bg-white border border-gray-200 p-6 rounded-2xl flex flex-col gap-1">
-              <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Sync Quality</span>
-              <span className="text-3xl font-light text-emerald-500">Opt</span>
-            </div>
+        <div className="grid grid-cols-2 gap-4">
+          <div className="bg-white border border-gray-200 p-6 rounded-2xl flex flex-col gap-1">
+            <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Network Nodes</span>
+            <span className="text-3xl font-light text-black">{String(totalNodes).padStart(2, '0')}</span>
+          </div>
+          <div className="bg-white border border-gray-200 p-6 rounded-2xl flex flex-col gap-1">
+            <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Mode</span>
+            <span className="text-xl font-light text-black">{trackName ? 'BAND-SPLIT' : 'HARMONICS'}</span>
           </div>
         </div>
       </div>
@@ -125,11 +183,12 @@ export function HostView({ socket, roomId, baseFreq, totalNodes, isPlaying, setB
 
           <button
             onClick={syncToggle}
-            className={`w-full py-5 text-xs font-bold uppercase tracking-[0.2em] rounded-xl transition-all ${
+            disabled={!canBroadcast}
+            className={`w-full py-5 text-xs font-bold uppercase tracking-[0.2em] rounded-xl transition-all disabled:opacity-30 disabled:cursor-not-allowed ${
               isPlaying ? 'bg-gray-100 text-black border border-gray-200' : 'bg-black text-white hover:bg-gray-800'
             }`}
           >
-            {isPlaying ? 'Disable Signal' : 'Initiate Broadcast'}
+            {isPlaying ? 'Disable Signal' : canBroadcast ? 'Initiate Broadcast' : 'Awaiting Nodes…'}
           </button>
         </div>
         {error && (
