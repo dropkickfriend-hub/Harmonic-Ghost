@@ -16,9 +16,11 @@ export function useSocket(timeoutMs = 2500): SocketState {
   const [status, setStatus] = useState<SocketState['status']>('connecting');
 
   useEffect(() => {
-    const s: GhostSocket = io(window.location.origin, {
+    const url = import.meta.env.VITE_SOCKET_URL || window.location.origin;
+    const s: GhostSocket = io(url, {
       reconnectionAttempts: 2,
       timeout: timeoutMs,
+      transports: ['websocket', 'polling'],
     });
 
     const onConnect = () => {

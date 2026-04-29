@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState, type ChangeEvent } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Activity, Upload, Check } from 'lucide-react';
+import { Activity, Upload, Check, Crosshair } from 'lucide-react';
 import type { GhostSocket } from '../socket/useSocket';
 import { startPitchDetector, type PitchDetectorHandle } from '../audio/PitchDetector';
+import type { CalibrationState } from '../App';
 
 interface Props {
   socket: GhostSocket;
@@ -11,9 +12,20 @@ interface Props {
   totalNodes: number;
   isPlaying: boolean;
   setBaseFreq: (v: number) => void;
+  calibration: CalibrationState;
+  onCalibrate: () => void;
 }
 
-export function HostView({ socket, roomId, baseFreq, totalNodes, isPlaying, setBaseFreq }: Props) {
+export function HostView({
+  socket,
+  roomId,
+  baseFreq,
+  totalNodes,
+  isPlaying,
+  setBaseFreq,
+  calibration,
+  onCalibrate,
+}: Props) {
   const [isLive, setIsLive] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [trackName, setTrackName] = useState<string | null>(null);
@@ -162,6 +174,24 @@ export function HostView({ socket, roomId, baseFreq, totalNodes, isPlaying, setB
             <span className="text-xl font-light text-black">{trackName ? 'BAND-SPLIT' : 'HARMONICS'}</span>
           </div>
         </div>
+
+        <button
+          onClick={onCalibrate}
+          disabled={totalNodes === 0 || calibration.phase === 'listening'}
+          className="w-full h-14 bg-white border border-gray-200 rounded-xl flex items-center justify-center gap-3 hover:border-black transition-all disabled:opacity-40"
+        >
+          <Crosshair className="w-4 h-4" />
+          <span className="text-[11px] font-bold uppercase tracking-widest">
+            {calibration.phase === 'listening'
+              ? `Calibrating · ${calibration.remaining} left`
+              : calibration.phase === 'done'
+                ? 'Recalibrate Spatial Field'
+                : 'Calibrate Spatial Field'}
+          </span>
+        </button>
+        <p className="text-[10px] text-gray-400 leading-relaxed">
+          Hold this phone still in the centre · nodes will chirp in turn at ~18 kHz · don't move them after.
+        </p>
       </div>
 
       <div className="mt-12 lg:mt-0 flex flex-col gap-4">

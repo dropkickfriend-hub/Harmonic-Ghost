@@ -8,7 +8,13 @@ import { SoloView } from './components/SoloView';
 import { useSocket } from './socket/useSocket';
 import { HarmonicEngine } from './audio/HarmonicEngine';
 import { BandPlayer } from './audio/BandPlayer';
-import type { AppMode, Band } from './types';
+import { emitChirp, startListener, type ListenerHandle } from './audio/Chirp';
+import type { AppMode, Band, CalibrationStep, CalibrationResult } from './types';
+
+export type CalibrationState =
+  | { phase: 'idle' }
+  | { phase: 'listening'; remaining: number }
+  | { phase: 'done'; rank: number | null };
 
 export default function App() {
   const [mode, setMode] = useState<AppMode>('LANDING');
@@ -19,10 +25,12 @@ export default function App() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeBand, setActiveBand] = useState<Band | null>(null);
+  const [calibration, setCalibration] = useState<CalibrationState>({ phase: 'idle' });
 
   const { socket, status } = useSocket();
   const nodeEngine = useRef<HarmonicEngine | null>(null);
   const bandPlayer = useRef<BandPlayer | null>(null);
+  const listener = useRef<ListenerHandle | null>(null);
   const pendingTrackUrl = useRef<string | null>(null);
 
   useEffect(() => {
@@ -31,6 +39,7 @@ export default function App() {
     return () => {
       nodeEngine.current?.dispose();
       bandPlayer.current?.dispose();
+      listener.current?.stop();
     };
   }, []);
 
@@ -72,8 +81,6 @@ export default function App() {
         setIsPlaying(false);
         return;
       }
-
-      // Band-split mode: play our slice of the host's track.
       if (data.band && data.trackUrl) {
         try {
           if (!bandPlayer.current?.isLoaded(data.trackUrl)) {
@@ -87,8 +94,6 @@ export default function App() {
         }
         return;
       }
-
-      // Harmonic-stack fallback: each node plays its assigned harmonic.
       if (harmonicIndex !== null) {
         const delaySec = Math.max(0, (data.startTime - Date.now()) / 1000);
         nodeEngine.current?.start({ fundamental: baseFreq, harmonics: [harmonicIndex] }, delaySec);
@@ -101,6 +106,55 @@ export default function App() {
       if (harmonicIndex !== null) {
         nodeEngine.current?.setFundamental(data.baseFreq, [harmonicIndex]);
       }
+    };
+
+    // Host: schedule a single mic listener spanning every node's chirp window,
+    // then score each window's peak amplitude as a relative-distance proxy.
+    const onCalibratePlan = async (data: { steps: CalibrationStep[] }) => {
+      try {
+        if (!listener.current) listener.current = await startListener();
+        const handle = listener.current;
+        setCalibration({ phase: 'listening', remaining: data.steps.length });
+
+        const results: CalibrationResult[] = [];
+        for (const step of data.steps) {
+          const waitMs = step.emitAtMs - Date.now();
+          if (waitMs > 0) await new Promise((r) => setTimeout(r, waitMs));
+          // Sample for the chirp duration plus a small guard band.
+          const startCtx = handle.ctx.currentTime;
+          await new Promise((r) => setTimeout(r, 350));
+          const endCtx = handle.ctx.currentTime;
+          const peak = handle.peakSince(startCtx, endCtx);
+          results.push({ nodeId: step.nodeId, score: peak });
+          setCalibration((prev) =>
+            prev.phase === 'listening' ? { phase: 'listening', remaining: prev.remaining - 1 } : prev,
+          );
+        }
+        socket.emit('calibrate:results', { roomId, results });
+      } catch (e) {
+        setError(`calibration: ${(e as Error).message}`);
+        setCalibration({ phase: 'idle' });
+      }
+    };
+
+    // Node: scheduled chirp emission.
+    const onCalibrateEmit = (data: { atMs: number }) => {
+      const Ctor =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      const ctx = new Ctor();
+      void ctx.resume();
+      const delaySec = Math.max(0, (data.atMs - Date.now()) / 1000);
+      emitChirp(ctx, ctx.currentTime + delaySec);
+      setTimeout(() => void ctx.close(), (delaySec + 0.5) * 1000);
+    };
+
+    const onCalibrateDone = (data: { ranking: { nodeId: string; rank: number }[] }) => {
+      const me = data.ranking.find((r) => r.nodeId === socket.id);
+      setCalibration({ phase: 'done', rank: me ? me.rank : null });
+      // Stop the host listener now that we have the result.
+      listener.current?.stop();
+      listener.current = null;
     };
 
     const onClosed = () => {
@@ -116,6 +170,9 @@ export default function App() {
     socket.on('host:nodeLeft', onLeft);
     socket.on('audio:command', onCommand);
     socket.on('frequency:updated', onFreq);
+    socket.on('calibrate:plan', onCalibratePlan);
+    socket.on('calibrate:emit', onCalibrateEmit);
+    socket.on('calibrate:done', onCalibrateDone);
     socket.on('host:closed', onClosed);
     socket.on('error', onErr);
 
@@ -127,20 +184,26 @@ export default function App() {
       socket.off('host:nodeLeft', onLeft);
       socket.off('audio:command', onCommand);
       socket.off('frequency:updated', onFreq);
+      socket.off('calibrate:plan', onCalibratePlan);
+      socket.off('calibrate:emit', onCalibrateEmit);
+      socket.off('calibrate:done', onCalibrateDone);
       socket.off('host:closed', onClosed);
       socket.off('error', onErr);
     };
-  }, [socket, baseFreq, harmonicIndex]);
+  }, [socket, baseFreq, harmonicIndex, roomId]);
 
   const reset = () => {
     nodeEngine.current?.stop();
     bandPlayer.current?.stop();
+    listener.current?.stop();
+    listener.current = null;
     setMode('LANDING');
     setRoomId('');
     setHarmonicIndex(null);
     setTotalNodes(0);
     setIsPlaying(false);
     setActiveBand(null);
+    setCalibration({ phase: 'idle' });
     setError(null);
   };
 
@@ -176,6 +239,8 @@ export default function App() {
                 totalNodes={totalNodes}
                 isPlaying={isPlaying}
                 setBaseFreq={setBaseFreq}
+                calibration={calibration}
+                onCalibrate={() => socket.emit('calibrate:start', { roomId })}
               />
             )}
 
@@ -185,6 +250,7 @@ export default function App() {
                 baseFreq={baseFreq}
                 isPlaying={isPlaying}
                 band={activeBand}
+                calibration={calibration}
               />
             )}
 
@@ -193,7 +259,7 @@ export default function App() {
         </main>
 
         <footer className="mt-12 h-12 border-t border-gray-200 flex items-center justify-between text-[10px] font-bold text-gray-300 uppercase tracking-widest">
-          <div>System v1.6.0_PHY</div>
+          <div>System v1.7.0_PHY</div>
           <div className="hidden sm:block">© Phantomatic Lab</div>
         </footer>
       </div>

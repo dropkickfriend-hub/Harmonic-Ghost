@@ -13,6 +13,11 @@ interface Room {
   baseFreq: number;
   nodes: string[];
   track?: { buffer: Buffer; mime: string };
+  // Ranking is the node order from closest-to-host (rank 0) to farthest. Used
+  // to assign bands so widely-spaced phones get lower bands (fundamental
+  // reconstruction works best across distance) and clustered phones get
+  // highs (where directional cues matter more).
+  ranking?: string[];
 }
 
 // Logarithmic band split. Drops content below `lo` so the fundamental is
@@ -32,8 +37,28 @@ function logBands(n: number, lo = 80, hi = 12000) {
 async function startServer() {
   const app = express();
   const httpServer = createServer(app);
+  const allowedOrigins = (process.env.ALLOWED_ORIGINS || '*')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const corsOrigin = allowedOrigins.includes('*') ? '*' : allowedOrigins;
+
+  app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    if (corsOrigin === '*') {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+    } else if (origin && allowedOrigins.includes(origin)) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Vary', 'Origin');
+    }
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    if (req.method === 'OPTIONS') return res.sendStatus(204);
+    next();
+  });
+
   const io = new Server(httpServer, {
-    cors: { origin: '*' },
+    cors: { origin: corsOrigin },
     maxHttpBufferSize: 25 * 1024 * 1024,
   });
 
@@ -126,7 +151,16 @@ async function startServer() {
       if (room.track && room.nodes.length > 0) {
         const bands = logBands(room.nodes.length);
         const trackUrl = `/api/track/${roomId}`;
-        room.nodes.forEach((nodeId, i) => {
+        // Order nodes by ranking if calibrated. Lowest band (index 0) goes to
+        // the farthest node so spatially-spread phones reconstruct the bass.
+        const ordered = room.ranking
+          ? [...room.ranking].reverse().filter((id) => room.nodes.includes(id))
+          : room.nodes;
+        // Append any nodes not present in the ranking (e.g. joined post-calibration).
+        room.nodes.forEach((id) => {
+          if (!ordered.includes(id)) ordered.push(id);
+        });
+        ordered.forEach((nodeId, i) => {
           io.to(nodeId).emit('audio:command', {
             type: 'start',
             startTime,
@@ -138,6 +172,38 @@ async function startServer() {
         // Harmonic-stack fallback (no track loaded): each node plays its sine.
         io.to(roomId).emit('audio:command', { type: 'start', startTime });
       }
+    });
+
+    socket.on('calibrate:start', ({ roomId }) => {
+      const room = rooms[roomId];
+      if (!room || room.hostId !== socket.id) return;
+      if (room.nodes.length === 0) return;
+
+      // Schedule each node to chirp 1.5s apart, with a 1.5s lead so the host
+      // can spin up its mic listener before the first emission.
+      const lead = 1500;
+      const gap = 1500;
+      const t0 = Date.now() + lead;
+      const steps = room.nodes.map((nodeId, i) => ({
+        nodeId,
+        emitAtMs: t0 + i * gap,
+      }));
+
+      io.to(room.hostId).emit('calibrate:plan', { steps });
+      steps.forEach((s) => {
+        io.to(s.nodeId).emit('calibrate:emit', { atMs: s.emitAtMs });
+      });
+    });
+
+    socket.on('calibrate:results', ({ roomId, results }) => {
+      const room = rooms[roomId];
+      if (!room || room.hostId !== socket.id) return;
+      // Higher score = louder chirp = closer to host.
+      const sorted = [...results].sort((a, b) => b.score - a.score);
+      room.ranking = sorted.map((r) => r.nodeId);
+      io.to(roomId).emit('calibrate:done', {
+        ranking: sorted.map((r, i) => ({ nodeId: r.nodeId, rank: i })),
+      });
     });
 
     socket.on('frequency:change', ({ roomId, baseFreq }) => {
@@ -158,6 +224,9 @@ async function startServer() {
           const i = room.nodes.indexOf(socket.id);
           if (i !== -1) {
             room.nodes.splice(i, 1);
+            if (room.ranking) {
+              room.ranking = room.ranking.filter((id) => id !== socket.id);
+            }
             io.to(room.hostId).emit('host:nodeLeft', { totalNodes: room.nodes.length });
           }
         }

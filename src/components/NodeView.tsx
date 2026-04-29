@@ -1,15 +1,17 @@
 import { motion } from 'motion/react';
 import { Waves } from 'lucide-react';
 import type { Band } from '../types';
+import type { CalibrationState } from '../App';
 
 interface Props {
   harmonicIndex: number;
   baseFreq: number;
   isPlaying: boolean;
   band: Band | null;
+  calibration: CalibrationState;
 }
 
-export function NodeView({ harmonicIndex, baseFreq, isPlaying, band }: Props) {
+export function NodeView({ harmonicIndex, baseFreq, isPlaying, band, calibration }: Props) {
   return (
     <motion.div
       key="node"
@@ -66,6 +68,12 @@ export function NodeView({ harmonicIndex, baseFreq, isPlaying, band }: Props) {
           </div>
         </div>
       </div>
+
+      {calibration.phase === 'done' && calibration.rank !== null && (
+        <div className="mt-6 px-4 py-2 bg-emerald-50 border border-emerald-200 rounded-full text-[10px] font-bold uppercase tracking-widest text-emerald-700">
+          Calibrated · Rank #{calibration.rank + 1}
+        </div>
+      )}
 
       <p className="mt-8 text-[10px] text-gray-400 text-center uppercase tracking-widest leading-relaxed">
         Hold position after calibration <br /> to preserve psychoacoustic field
